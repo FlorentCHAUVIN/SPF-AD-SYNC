@@ -1,6 +1,6 @@
 #*===============================================================================
 # Filename : SPFoundation-AD-Sync.ps1
-# Version = "1.1.1"
+# Version = "1.1.2"
 #*===============================================================================
 # Author = "Florent CHAUVIN"
 # Company: LINKBYNET
@@ -367,7 +367,7 @@ foreach($site in $sites) {
 					Write-host "  |--> The domain controller hasn't been be listed in the previous test" -fore Red
 					$DomainTestedWithSuccess = $False
 					$CounterUsersDomainUnreachable++
-					$UsersWithDomainUnreachable += $SPuser.LoginName					
+					$UsersWithDomainUnreachable += [String]$SPuser.LoginName					
 				}
 				Else
 				{
@@ -379,7 +379,7 @@ foreach($site in $sites) {
 					{
 						Write-Host "  |--> Cannot list domain controller for domain $DomainName. User synchronization can not be performed. Reason: $NlTestResult" -fore Red
 						$CounterUsersDomainUnreachable++
-						$UsersWithDomainUnreachable += $SPuser.LoginName
+						$UsersWithDomainUnreachable += [String]$SPuser.LoginName
 						$DomainUnReachable += $DomainName
 						$DomainTestedWithSuccess = $False
 					}
@@ -387,7 +387,7 @@ foreach($site in $sites) {
 					{
 						Write-Host "  |--> Cannot list domain controller for domain $DomainName. User synchronization can not be performed. Reason: Command nltest.exe send empty result, relaunch the script in new Powershell session" -fore Red
 						$CounterUsersDomainUnreachable++
-						$UsersWithDomainUnreachable += $SPuser.LoginName
+						$UsersWithDomainUnreachable += [String]$SPuser.LoginName
 						$DomainTestedWithSuccess = $False						
 					}
 					Else
@@ -421,7 +421,7 @@ foreach($site in $sites) {
 							$errText = $error[0].Exception.Message
 							Write-Host "  |--> User synchronization has failed. Reason: $errText" -fore Red
 							$CounterUsersNativeSynchronizationFailed++
-							$UsersWithNativeSynchonizationError += $SPuser.LoginName
+							$UsersWithNativeSynchonizationError += [String]$SPuser.LoginName
 							$error.clear()				
 						}
 						Else
@@ -529,7 +529,7 @@ foreach($site in $sites) {
 							{
 								Write-Host "  |--> User $SPUserSAMAccountName not found in domain $DomainName" -fore Red
 								$CounterUsersAdvancedNotFound++
-								$UsersNotFound += $SPUser.LoginName
+								$UsersNotFound += [String]$SPuser.LoginName
 								Remove-Variable ADUserBySAMAccountName -ErrorAction SilentlyContinue
 								Remove-variable ADUserBySID	 -ErrorAction SilentlyContinue								
 							}
@@ -575,9 +575,9 @@ foreach($site in $sites) {
 										Write-Host "  |--> Failed to update sharePoint user. Synchronization of user have been aborted." -fore Red
 										$ExecuteSynchronize = $False
 										$CounterUsersNativeSynchronizationFailed++
-										$UsersWithNativeSynchonizationError += $SPuser.LoginName										
+										$UsersWithNativeSynchonizationError += [String]$SPuser.LoginName										
 										$CounterUsersAdvancedSynchronizationFailed++
-										$UsersWithAdvancedSynchonizationError += $SPuser.LoginName
+										$UsersWithAdvancedSynchonizationError += [String]$SPuser.LoginName
 									}
 									Remove-variable ADUserBySAMAccountNameSID -ErrorAction SilentlyContinue
 								}
@@ -626,9 +626,9 @@ foreach($site in $sites) {
 										Write-Host "  |--> Failed to update sharePoint user. Synchronization of user have been aborted." -fore Red
 										$ExecuteSynchronize = $False
 										$CounterUsersNativeSynchronizationFailed++
-										$UsersWithNativeSynchonizationError += $SPuser.LoginName										
+										$UsersWithNativeSynchonizationError += [String]$SPuser.LoginName										
 										$CounterUsersAdvancedSynchronizationFailed++
-										$UsersWithAdvancedSynchonizationError += $SPuser.LoginName
+										$UsersWithAdvancedSynchonizationError += [String]$SPuser.LoginName
 									}
 									Remove-variable ADUserBySAMAccountNameSID -ErrorAction SilentlyContinue
 									Remove-variable ADUserBySIDSAMAccountName -ErrorAction SilentlyContinue
@@ -654,9 +654,9 @@ foreach($site in $sites) {
 										Write-Host "  |--> Synchronization of user have been aborted." -fore Red
 										$ExecuteSynchronize = $False
 										$CounterUsersNativeSynchronizationFailed++
-										$UsersWithNativeSynchonizationError += $SPuser.LoginName										
+										$UsersWithNativeSynchonizationError += [String]$SPuser.LoginName										
 										$CounterUsersAdvancedSynchronizationFailed++
-										$UsersWithAdvancedSynchonizationError += $SPuser.LoginName
+										$UsersWithAdvancedSynchonizationError += [String]$SPuser.LoginName
 										Remove-variable ADUserBySIDSAMAccountName -ErrorAction SilentlyContinue
 										Remove-variable ADUserBySAMAccountNameSAMAccountName -ErrorAction SilentlyContinue											
 									}
@@ -684,7 +684,7 @@ foreach($site in $sites) {
 										$errText = $error[0].Exception.Message
 										Write-Host "  |--> User synchronization has failed. Reason: $errText" -fore Red
 										$CounterUsersNativeSynchronizationFailed++
-										$UsersWithNativeSynchonizationError += $SPuser.LoginName
+										$UsersWithNativeSynchonizationError += [String]$SPuser.LoginName
 										$error.clear()				
 									}
 									Else
@@ -988,6 +988,7 @@ foreach($site in $sites) {
 									{
 										Write-Host "  |--> Failed to get $SPUserStr SharePoint user information" -fore Red
 										$CounterUsersAdvancedSynchronizationFailed++
+										$UsersWithAdvancedSynchonizationError += [String]$SPuser.LoginName
 									}
 									Remove-variable ADUser -ErrorAction SilentlyContinue
 								}
@@ -999,9 +1000,9 @@ foreach($site in $sites) {
 							$errText = $error[0].Exception.Message
 							Write-Host "  |--> Cannot get user information from domain. Reason: $errText " -fore Red
 							$CounterUsersNativeSynchronizationFailed++
-							$UsersWithNativeSynchonizationError += $SPuser.LoginName										
+							$UsersWithNativeSynchonizationError += [String]$SPuser.LoginName										
 							$CounterUsersAdvancedSynchronizationFailed++
-							$UsersWithAdvancedSynchonizationError += $SPuser.LoginName
+							$UsersWithAdvancedSynchonizationError += [String]$SPuser.LoginName
 							$error.clear()
 						}
 						
@@ -1054,7 +1055,7 @@ foreach($site in $sites) {
 			Write-Host "| "
 			$UsersWithNativeSynchonizationError | %{Write-host "| "$_}
 		}
-		$GlobalResult.add($SiteUrl,[math]::Round((($UsersToSynchronize-($CounterUsersNativeSynchronizationFailed+$CounterUsersDomainUnreachable+$CounterUsersAdvancedNotFound))/$UsersToSynchronize)*100,1))
+		$GlobalResult.add($SiteUrl,[math]::Round((($UsersToSynchronize-($CounterUsersNativeSynchronizationFailed+$CounterUsersDomainUnreachable))/$UsersToSynchronize)*100,1))
 	}
 	Else
 	{
@@ -1103,27 +1104,27 @@ foreach($site in $sites) {
 			$UsersNotFound += $UsersWithDomainUnreachable
 			foreach ($UserToDelete in $UsersNotFound)
 			{
-				Write-host "|-> Remove of user"$UserToDelete.loginName
+				Write-host "|-> Remove of user"$UserToDelete
 				
 				Try
 				{
-					Remove-SPUser -identity $UserToDelete.loginName -web $SiteUrl -Confirm:$False  -ErrorAction Stop
-					$TestUser = Get-SPuser -Limit ALL -web $SiteUrl | where-object {$_.IsDomainGroup -eq $False} | Where-object {$_ -eq $UserToDelete.loginName}
+					Remove-SPUser -identity $UserToDelete -web $SiteUrl -Confirm:$False  -ErrorAction Stop
+					$TestUser = Get-SPuser -Limit ALL -web $SiteUrl | where-object {$_.IsDomainGroup -eq $False} | Where-object {$_ -eq $UserToDelete}
 					If($TestUser -ne $null)
 					{
-						Write-host "|-> Failed to remove "$UserToDelete.loginName -fore Red
+						Write-host "|-> Failed to remove "$UserToDelete -fore Red
 						$CounterUsersDeletionFailed++
 					}
 					Else
 					{
-						Write-Host $UserToDelete.loginName "has been removed" -fore Green
+						Write-Host $UserToDelete "has been removed" -fore Green
 						$CounterUsersDeletionSuccess++
 					}
 				}
 				Catch
 				{
 					$errText = $error[0].Exception.Message
-					Write-host "|-> Failed to remove "$UserToDelete".Reason: $errText" -fore Red
+					Write-host "|-> Failed to remove "$UserToDelete". Reason: $errText" -fore Red
 					$CounterUsersDeletionFailed++
 				}
 			}
