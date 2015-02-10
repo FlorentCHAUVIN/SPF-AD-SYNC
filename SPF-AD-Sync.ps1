@@ -1,12 +1,12 @@
 #*===============================================================================
-# Filename : SPFoundation_AD_Sync.ps1
-# Version = "1.1.0"
+# Filename : SPFoundation-AD-Sync.ps1
+# Version = "1.1.1"
 #*===============================================================================
 # Author = "Florent CHAUVIN"
 # Company: LINKBYNET
 #*===============================================================================
 # Created: FCH - 12 december 2014
-# Modified: FCH - 9 february 2015
+# Modified: FCH - 10 february 2015
 #*===============================================================================
 # Description :
 # Script to synchronize SharePoint Foundation user profile with their domain's account
@@ -228,6 +228,8 @@ if (!$?)
 	Write-Host "Transcript cannot start because path is unavailable" -Fore Red
 	$TranscriptStatus= "Error"
 }
+Else
+
 Write-host "----------------------------------------------------------------------------" -fore Yellow
 Write-host "--           SharePoint Foundation User Synchronization                   --" -fore Yellow
 Write-host "----------------------------------------------------------------------------" -fore Yellow
@@ -1028,7 +1030,7 @@ foreach($site in $sites) {
 	Write-host "============================================================================" -fore Yellow
 	Write-host "== Synchronization Report for $SiteUrl ($web)" -fore Yellow
 	Write-host "============================================================================" -fore Yellow
-	Write-host "| Users to synchronize : "$CounterUsersToSynchronize
+	Write-host "| Users to synchronize : "$UsersToSynchronize
 	Write-host "----------------------------------------------------------------------------"
 	Write-host "| Users with unreachable domain : "	$CounterUsersDomainUnreachable
 	If ($CounterUsersDomainUnreachable -ne 0)
@@ -1052,7 +1054,7 @@ foreach($site in $sites) {
 			Write-Host "| "
 			$UsersWithNativeSynchonizationError | %{Write-host "| "$_}
 		}
-		$GlobalResult.add($SiteUrl,[math]::Round((($CounterUsersToSynchronize-($CounterUsersNativeSynchronizationFailed+$CounterUsersDomainUnreachable))/$CounterUsersToSynchronize)*100,1))
+		$GlobalResult.add($SiteUrl,[math]::Round((($UsersToSynchronize-($CounterUsersNativeSynchronizationFailed+$CounterUsersDomainUnreachable+$CounterUsersAdvancedNotFound))/$UsersToSynchronize)*100,1))
 	}
 	Else
 	{
@@ -1084,15 +1086,15 @@ foreach($site in $sites) {
 			Write-Host "| "
 			$UsersWithAdvancedSynchonizationError | %{Write-host "| "$_}
 		}
-		$GlobalResult.add([String]$SiteUrl.replace("SPSite Url=",""),[math]::Round((($CounterUsersToSynchronize-($CounterUsersNativeSynchronizationFailed+$CounterUsersAdvancedSynchronizationFailed+$CounterUsersDomainUnreachable))/$CounterUsersToSynchronize)*100,1))
+		$GlobalResult.add([String]$SiteUrl.replace("SPSite Url=",""),[math]::Round((($UsersToSynchronize-($CounterUsersNativeSynchronizationFailed+$CounterUsersAdvancedSynchronizationFailed+$CounterUsersDomainUnreachable+$CounterUsersAdvancedNotFound))/$UsersToSynchronize)*100,1))
 	}
 
-	If(($DeleteUSersNotFound -eq $True) -and (($UsersNotFound -ne $null) -or ($UsersWithDomainUnreachable -ne $null)))
+	If(($DeleteUSersNotFound -eq $True) -and (($UsersNotFound.count -gt 0) -or ($UsersWithDomainUnreachable.count -gt 0)))
 	{
 		Write-host "============================================================================" -fore Yellow
 		Write-host "== Deleting user that are not found or with unreachable domain for $SiteUrl ($web)" -fore Yellow
 		Write-host "============================================================================" -fore Yellow	
-		$DeletedUsersRatio = [System.Math]::Round((($CounterUsersAdvancedNotFound+$CounterUsersDomainUnreachable)/ $CounterUsersToSynchronize)*100,1)
+		$DeletedUsersRatio = [System.Math]::Round((($CounterUsersAdvancedNotFound+$CounterUsersDomainUnreachable)/$UsersToSynchronize)*100,1)
 		Write-host "|-> $DeletedUsersRatio % of users have not found"
 		#To avoid a mass removal in case of unavailability of a domain, I introduced a maximum ratio of account to be deleted
 		If($DeletedUsersRatio -le 30)
@@ -1143,7 +1145,7 @@ foreach($site in $sites) {
 						<p>Users to synchronize</p>
 						</td>
 						<td>
-						<p>$CounterUsersToSynchronize</p>
+						<p>$UsersToSynchronize</p>
 						</td>
 					</tr>
 					<tr>
@@ -1159,7 +1161,6 @@ foreach($site in $sites) {
 						<p>List of user for which the domain is unreachable</p>
 						</td>
 						<td>
-						<p>
 		"
 		If ($CounterUsersDomainUnreachable -ne 0)
 		{
@@ -1167,7 +1168,6 @@ foreach($site in $sites) {
 		}
 		
 		$jobSummary +="
-						</p>
 						</td>
 					</tr>				
 		"
@@ -1199,15 +1199,13 @@ foreach($site in $sites) {
 						<td>
 						<p>List of user for which the native synchronization failed</p>
 						</td>
-						<td>
-						<p>					
+						<td>					
 			"
 			If($CounterUsersNativeSynchronizationFailed -ne 0)
 			{
 				$UsersWithNativeSynchonizationError | %{$jobSummary += $_ + "<br />"}
 			}
 			$jobSummary +="
-							</p>
 							</td>
 						</tr>
 					</tbody>
@@ -1270,50 +1268,44 @@ foreach($site in $sites) {
 						<td>
 						<p>List of users who have not been found in domain</p>
 						</td>
-						<td>
-						<p>					
+						<td>				
 			"		
 			If($CounterUsersAdvancedNotFound -ne 0)
 			{
 				$UsersNotFound | %{$jobSummary += $_ + "<br />"}
 			}
 			$jobSummary +="
-						</p>
 						</td>
 					</tr>
 					<tr>
 						<td>
 						<p>List of user for which the native synchronization failed</p>
 						</td>
-						<td>
-						<p>							
+						<td>						
 			"
 			If($CounterUsersNativeSynchronizationFailed -ne 0)
 			{
 				$UsersWithNativeSynchonizationError | %{$jobSummary += $_ + "<br />"}		
 			}
 			$jobSummary +="
-						</p>
 						</td>
 					</tr>
 					<tr>
 						<td>
 						<p>List of user for which the advanced synchronization failed</p>
 						</td>
-						<td>
-						<p>							
+						<td>						
 			"			
 			If($CounterUsersAdvancedSynchronizationFailed -ne 0 )
 			{
 				$UsersWithAdvancedSynchonizationError | %{$jobSummary += $_ + "<br />"}
 			}
 			$jobSummary +="
-						</p>
 						</td>
 					</tr>"
-			If(($DeleteUSersNotFound -eq $True) -and ($UsersNotFound -ne $null))
+			If(($DeleteUSersNotFound -eq $True) -and (($UsersNotFound.count -gt 0) -or ($UsersWithDomainUnreachable.count -gt 0)))
 			{
-				$DeletedUsersRatio = [System.Math]::Round((($CounterUsersAdvancedNotFound+$CounterUsersDomainUnreachable)/ $CounterUsersToSynchronize)*100,1)
+				$DeletedUsersRatio = [System.Math]::Round((($CounterUsersAdvancedNotFound+$CounterUsersDomainUnreachable)/$UsersToSynchronize)*100,1)
 				$jobSummary +="<tr>
 							<td>
 							<p>$DeletedUsersRatio % of users have not found or have unreachable domain</p>
@@ -1357,9 +1349,10 @@ foreach($site in $sites) {
 			"
 		}		
 	}
-	Remove-variable CounterUserToSynchronize -ErrorAction SilentlyContinue
-	Remove-variable CounterUserNativeSynchronizationSuccess -ErrorAction SilentlyContinue
-	Remove-variable CounterUserNativeSynchronizationFailed -ErrorAction SilentlyContinue
+	Remove-variable UsersToSynchronize -ErrorAction SilentlyContinue
+	Remove-variable CounterUsersToSynchronize -ErrorAction SilentlyContinue
+	Remove-variable CounterUsersNativeSynchronizationSuccess -ErrorAction SilentlyContinue
+	Remove-variable CounterUsersNativeSynchronizationFailed -ErrorAction SilentlyContinue
 	Remove-variable CounterUsersNativeSynchronizationNoModification -ErrorAction SilentlyContinue
 	Remove-Variable UsersWithNativeSynchonizationError -ErrorAction SilentlyContinue
 	Remove-variable CounterUsersAdvancedSynchronizationSuccess -ErrorAction SilentlyContinue
