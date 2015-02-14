@@ -1,12 +1,12 @@
 #*===============================================================================
 # Filename : SPFoundation-AD-Sync.ps1
-# Version = "1.2.0"
+# Version = "1.2.2"
 #*===============================================================================
 # Author = "Florent CHAUVIN"
 # Company: LINKBYNET
 #*===============================================================================
 # Created: FCH - 12 december 2014
-# Modified: FCH - 11 february 2015
+# Modified: FCH - 12 february 2015
 #*===============================================================================
 # Description :
 # Script to synchronize SharePoint Foundation user profile with their domain's account
@@ -202,18 +202,34 @@ Function Retrieve-User-And-Properties
 {
 	Param
         (
-			$_User
+			$_User,
+			$LoginName
 		)
 	Try
 	{
-		if ($site.WebApplication.UseClaimsAuthentication) 
+		If($LoginName -eq $true)
 		{
-			$claim = New-SPClaimsPrincipal $_User.LoginName -IdentityType WindowsSamAccountName
-			$Global:SPuser  = $web | Get-SPUser -Identity $claim -ErrorAction Stop
+			if ($site.WebApplication.UseClaimsAuthentication) 
+			{
+				$claim = New-SPClaimsPrincipal $_User -IdentityType WindowsSamAccountName
+				$Global:SPuser  = $web | Get-SPUser -Identity $claim -ErrorAction Stop
+			}
+			else
+			{
+				$Global:SPuser = $web | Get-SPUser -Identity $_User -ErrorAction Stop
+			}		
 		}
-		else
+		Else
 		{
-			$Global:SPuser = $web | Get-SPUser -Identity $_User.LoginName -ErrorAction Stop
+			if ($site.WebApplication.UseClaimsAuthentication) 
+			{
+				$claim = New-SPClaimsPrincipal $_User.LoginName -IdentityType WindowsSamAccountName
+				$Global:SPuser  = $web | Get-SPUser -Identity $claim -ErrorAction Stop
+			}
+			else
+			{
+				$Global:SPuser = $web | Get-SPUser -Identity $_User.LoginName -ErrorAction Stop
+			}
 		}
 		If($claim)
 		{
@@ -294,6 +310,7 @@ Function GetAndCheckADAccountModification
 		If(($ADUserBySAMAccountName -eq $null) -and ($ADUserBySID -eq $null))
 		{
 			Write-Host "  |--> User $SPUserSAMAccountName not found in domain $DomainName" -fore Red
+			$Global:ExecuteSynchronize = $False
 			$Global:CounterUsersAdvancedNotFound++
 			$Global:UsersNotFound += [String]$SPuser.LoginName
 		}
@@ -342,8 +359,10 @@ Function CheckADAccountModificationAndUpdate
 			$OldSPuser = $_SPuser
 			
 			UpdateUser -_Identity $_SPuser -_NewAlias $_SPUserStr
-
-			If ($ADUserBySAMAccountNameSID -eq $_SPUserSID)
+			
+			Retrieve-User-And-Properties $_SPuser
+			
+			If ($ADUserBySAMAccountNameSID -eq $SPUserSID)
 			{
 				Write-Host "  |--> SharePoint user have been successfully updated." -fore Green
 				$Global:ExecuteSynchronize = $True
@@ -372,7 +391,9 @@ Function CheckADAccountModificationAndUpdate
 			
 			UpdateUser -_Identity $_SPuser -_NewAlias $UserNewLoginName
 			
-			If($_SPuser -ne $null)
+			Retrieve-User-And-Properties -_User $UserNewLoginName -LoginName $True
+			
+			If($SPuser -ne $null)
 			{
 				Write-Host "  |--> SharePoint user have been successfully updated." -fore Green									
 				$Global:ExecuteSynchronize = $True
@@ -382,7 +403,7 @@ Function CheckADAccountModificationAndUpdate
 			}
 			Else
 			{
-				Write-Host "  |--> Failed to update sharePoint user. Synchronization of user have been aborted." -fore Red
+				Write-Host "  |--> Failed to update SharePoint user. Synchronization of user have been aborted." -fore Red
 				$Global:ExecuteSynchronize = $False
 				$Global:CounterUsersADAccountUpdateFailed++
 				$Global:UsersWithADAccountUpdateError += [String]$OldSPuser.LoginName
@@ -441,11 +462,13 @@ Function UpdateUser
 	Try
 	{
 		Move-SPUser -Identity $_Identity -newalias $_NewAlias -IgnoreSID -Confirm:$false -ErrorAction Stop
-		Retrieve-User-And-Properties $_Identity
+		if (!$?)
+		{
+			throw $error[0].Exception
+		}
 	}
 	Catch
 	{
-		$Global:SPuser = $null
 		$errText = $error[0].Exception.Message
 		Write-Host "  |--> Failed to update SharePoint User. Reason: $errText" -fore Red
 	}
@@ -741,6 +764,8 @@ Function UpdateUserExtendedInformation
 			Write-Host "  |--> Failed to update user extended information from SharePoint. Reason: $errText" -fore Red	
 		}	
 	}
+	Remove-variable List -ErrorAction SilentlyContinue
+	Remove-variable query -ErrorAction SilentlyContinue	
 
 }
 #EndRegion
@@ -757,6 +782,9 @@ Function CheckUserExtendedInformationModification
 
 	foreach ($item in $_list.GetItems($_query)) 
 	{
+
+		$Global:UserAdvancedModified = $False
+		$Global:UserAdvancedModificationFailed = $False
 		Try
 		{	
 			If((![string]::IsNullOrEmpty($item["JobTitle"])) -and (![string]::IsNullOrEmpty($_ADUser.title)) -and ($item["JobTitle"] -ne [string]$_ADUser.title))
@@ -879,7 +907,8 @@ Function CheckUserExtendedInformationModification
 			Write-Host "  |--> Failed to check user extended information modification. Reason: $errText" -fore Red	
 		}	
 	}
-
+	Remove-variable List -ErrorAction SilentlyContinue
+	Remove-variable query -ErrorAction SilentlyContinue	
 }
 #EndRegion
 
@@ -978,7 +1007,8 @@ LoadActiveDirectoryModule
 
 Write-host "|--> List sites"
 
-$sites = Get-SPSite -Limit ALL
+# $sites = Get-SPSite -Limit ALL
+$sites = Get-SPSite https://stagingworkgroup.sodexonet.com/sites/Motivation
 
 Write-host "|--> Sites to process :"
 
@@ -1021,8 +1051,10 @@ foreach($site in $sites) {
 		
 		#Regex to exclude system account and SharePoint group
 		$RegExclusionList = "c:0\(\.s\|truec:0\(\.s\|true|c:0!\.s\|windows|c:0!\.s\|forms:aspnetsqlmembershipprovider|NT\ AUTHORITY\\.*|SHAREPOINT\\.*"
+		#Regex to include only login name with backslash
+		$RegInclusionList = ".*\\.*"
 		
-        $Users = Get-SPUser -Limit All -web $web | where-object {$_.IsDomainGroup -eq $False}| Where-object{ $_.LoginName -notmatch $RegExclusionList}
+        $Users = Get-SPUser -Limit All -web $web | where-object {$_.IsDomainGroup -eq $False}| Where-object{ $_.LoginName -match $RegInclusionList}| Where-object{ $_.LoginName -notmatch $RegExclusionList}
 		
 		$UsersToSynchronize = $Users.count
 		
@@ -1059,7 +1091,7 @@ foreach($site in $sites) {
 					}
 					Else
 					{
-						Write-Host "  |--> Get user information from domain"
+						#Get user information from domain"
 
 						GetAndCheckADAccountModification -_SPUserSAMAccountName $SPUserSAMAccountName -_SPUserSID $SPUserSID -_SPuser $SPuser -_SPUserStr $SPUserStr -_DomainName $DomainName
 
@@ -1083,9 +1115,6 @@ foreach($site in $sites) {
 								Remove-variable query -ErrorAction SilentlyContinue
 								
 								Write-Host "  |--> Control if user extended information have been modified"
-								
-								$Global:UserAdvancedModified = $False
-								$Global:UserAdvancedModificationFailed = $False
 								
 								GetUserExtendedInformation -_SPUserStr $SPUserStr -_Web $web
 								
