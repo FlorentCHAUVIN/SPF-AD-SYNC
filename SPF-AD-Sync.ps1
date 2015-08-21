@@ -1,12 +1,12 @@
 #*===============================================================================
 # Filename : SPFoundation-AD-Sync.ps1
-# Version = "1.2.2"
+# Version = "1.4.0"
 #*===============================================================================
 # Author = "Florent CHAUVIN"
 # Company: LINKBYNET
 #*===============================================================================
 # Created: FCH - 12 december 2014
-# Modified: FCH - 12 february 2015
+# Modified: FCH - 16 august 2015
 #*===============================================================================
 # Description :
 # Script to synchronize SharePoint Foundation user profile with their domain's account
@@ -20,6 +20,11 @@
 
 #Path for script logging
 $Global:Log = ".\" + (get-date -uformat '%Y%m%d-%H%M') + "-SPFoundation_AD_Sync.log"
+#List of forest which users belong.Leave the value "" to test domain without adding the name of forest to the netbios domain name. Example: $Global:ForestList = @("","dnsforestname")
+$Global:ForestList = @("")
+#If needed, username and password for forest access (Must be created on one domain of all forest to access)
+$Global:ForestAccessUsername = ""
+$Global:ForestAccessPassword = ""
 #Debug mode, use to understand why account don't synchronize properly.
 $Global:DebugMode = $False
 #Delete account with domain unreachable or not found in domain (Advanced synchronization). The deletion is performed only if the number of account to delete is less than 30% of the number of synchronized account
@@ -95,7 +100,7 @@ function Load-Snapin
 		catch
 		{
 			$errText = $error[0].Exception.Message
-			Write-Host "|--> Loading of SharePoint Snap-in failed. Reason: $errText" -fore Red
+			Write-Host "|--> Loading of SharePoint Snap-in failed.Reason: $errText" -fore Red
 			Exit
 		}	
 	}	
@@ -122,7 +127,7 @@ function LoadActiveDirectoryModule
 				catch
 				{
 					$errText = $error[0].Exception.Message
-					Write-Host "|--> Import of Active Directory module failed. Reason: $errText" -fore Red
+					Write-Host "|--> Import of Active Directory module failed.Reason: $errText" -fore Red
 					$Global:ImportModuleAD = $False
 				}
 				
@@ -147,6 +152,39 @@ function LoadActiveDirectoryModule
 }
 #EndRegion
 
+#Region Determine whether SharePoint edition is SharePoint Foundation
+function Is-Foundation
+{
+    # Note: Standard &  Enterprise installations return the Foundation SKU as well as the Enterprise SKU or Standard SKU.
+    $2010enterpriseSKU = "D5595F62-449B-4061-B0B2-0CBAD410BB51"
+    $2010standardSKU = "3FDFBCC8-B3E4-4482-91FA-122C6432805C"
+    $2013enterpriseSKU = "B7D84C2B-0754-49E4-B7BE-7EE321DCE0A9"
+    $2013standardSKU = "C5D855EE-F32B-4A1C-97A8-F0A28CE02F9C"	
+ 
+	try 
+	{
+		$products = Get-SPFarm | Select Products -ErrorAction Stop 
+		  
+		foreach ($product in $products)
+		{
+		    $product = $product.Products            
+
+		    if (($product -contains $2010enterpriseSKU) -or ($product -contains $2010standardSKU) -or ($product -contains $2013enterpriseSKU) -or ($product -contains $2013standardSKU))
+		    {
+		    	return $false
+		    }
+		   
+		    return $true
+		}
+	} 
+	catch
+	{
+		$errText = $error[0].Exception.Message
+		Write-Host "|--> Unable to determine version of SharePoint.Reason: $errText"
+	}
+}
+#EndRegion
+
 #Region Test if user's domain is reachable, one time by domain for all users to synchronize
 Function TestDomainAvailability
 {
@@ -154,45 +192,174 @@ Function TestDomainAvailability
 	(
 		$_DomainName
 	)
-	If(($DomainReachable | Where-Object {$_ -eq $_DomainName}) -ne $null)
+	Write-host "  |--> Testing the availability of the domain '$_DomainName'"
+	If(($DomainReachable | Where-Object {$_.Name -eq $_DomainName}) -ne $null)
 	{
-		Write-host "  |--> The domain controller has been be listed in the previous test" -fore Green
-		$Global:DomainTestedWithSuccess = $True					
+		$DomainTested = $DomainReachable | Where-Object {$_.Name -eq $_DomainName}
+		$Global:DomainTestedWithSuccess = $True
+		$Global:DomainName = $DomainTested.CompleteName
+		$Global:DomainCred = $DomainTested.Credential
+		Write-host "  |--> The domain controller for domain '$_DomainName' has been be listed in the previous test" -fore Green
 	}
-	ElseIf(($DomainUnReachable | Where-Object {$_ -eq $_DomainName}) -ne $null)
+	ElseIf(($DomainUnReachable | Where-Object {$_.Name -eq $_DomainName}) -ne $null)
 	{
-		Write-host "  |--> The domain controller hasn't been be listed in the previous test" -fore Red
+		Write-host "  |--> The domain controller for domain '$_DomainName' hasn't been be listed in the previous test.User synchronization can not be performed." -fore Red
 		$Global:DomainTestedWithSuccess = $False
 		$Global:CounterUsersDomainUnreachable++
 		$Global:UsersWithDomainUnreachable += [String]$SPuser.LoginName					
 	}
 	Else
 	{
-		# Try to list domain controller of this domain with nltest.exe
-		$Nltestexe = "nltest.exe"
-		$NltestParam = "/dcList:" + $_DomainName
-		$NlTestResult = [String](& $nltestexe $NltestParam 2>&1)
-		if($NLTestResult -match ".*ERROR.*|.*UNAVAILABLE.*")
+		If(!$ForestList)
 		{
-			Write-Host "  |--> Cannot list domain controller for domain $_DomainName. User synchronization can not be performed. Reason: $NlTestResult" -fore Red
-			$Global:CounterUsersDomainUnreachable++
-			$Global:UsersWithDomainUnreachable += [String]$SPuser.LoginName
-			$Global:DomainUnReachable += $_DomainName
-			$Global:DomainTestedWithSuccess = $False
-		}
-		ElseIf([string]::IsNullOrEmpty($NLTestResult))
-		{
-			Write-Host "  |--> Cannot list domain controller for domain $_DomainName. User synchronization can not be performed. Reason: Command nltest.exe send empty result, relaunch the script in new Powershell session" -fore Red
-			$Global:CounterUsersDomainUnreachable++
-			$Global:UsersWithDomainUnreachable += [String]$SPuser.LoginName
-			$Global:DomainTestedWithSuccess = $False						
+			$ForestList = @("")
 		}
 		Else
 		{
-			Write-host "  |--> The domain controller for domain '$_DomainName' are available " -fore Green
-			$Global:DomainReachable += $_DomainName
-			$Global:DomainTestedWithSuccess = $True						
-		}					
+			If(($ForestList | Where-Object {$_ -eq ""}) -eq $null)
+			{
+				$ForestList += ""
+			}
+			$ForestList = $ForestList | sort
+		}
+		
+		Foreach ($Forest in $ForestList)
+		{
+			If($Forest -eq "")
+			{
+				[String]$_CompleteDomainName = $_DomainName
+			}
+			Else
+			{
+				[String]$_CompleteDomainName = $_DomainName + "." + $Forest
+				Write-host "  |--> Testing the availability of the domain '$_DomainName' by adding the name of the Forest '$Forest'"
+			}
+			
+			
+			$DomainTested = New-Object -TypeName PSObject
+			$DomainTested | Add-Member -Type NoteProperty -Name Name -Value $_DomainName
+			$DomainTested | Add-Member -Type NoteProperty -Name CompleteName -Value $_CompleteDomainName
+			$DomainTested | Add-Member -Type NoteProperty -Name Credential -Value $False
+			
+			If($ImportModuleAD -eq $false)
+			{
+				Write-host "  |--> Test by listing the domain controller with nltest"
+				# Try to list domain controller of this domain with nltest.exe
+				$Nltestexe = "nltest.exe"
+				$NltestParam = "/dcList:" + $_CompleteDomainName
+				$NlTestResult = [String](& $nltestexe $NltestParam 2>&1)
+				if($NLTestResult -match ".*ERROR.*|.*UNAVAILABLE.*")
+				{
+					Write-Host "  |--> Cannot list domain controller for domain '$_CompleteDomainName'. Reason: $NlTestResult" -fore Yellow
+					$Global:DomainUnReachable += $DomainTested
+					$Global:DomainTestedWithSuccess = $False
+				}
+				ElseIf([string]::IsNullOrEmpty($NLTestResult))
+				{
+					Write-Host "  |--> Cannot list domain controller for domain '$_CompleteDomainName'. Reason: Command nltest.exe send empty result, relaunch the script in new Powershell session" -fore Yellow
+					$Global:DomainTestedWithSuccess = $False						
+				}
+				Else
+				{
+				
+					Write-host "  |--> The domain controller for domain '$_CompleteDomainName' are available " -fore Green
+					$Global:DomainReachable += $DomainTested
+					$Global:DomainTestedWithSuccess = $True
+					break
+				}			
+			}
+			Else
+			{
+				Write-host "  |--> Test with 'Get-ADdomain' cmdlet"
+				$RetryWithCred = $False
+				Try
+				{
+					$GetADDomainTest =  Get-ADdomain -server $_CompleteDomainName
+					If(([string]::IsNullOrEmpty($GetADDomainTest)))
+					{
+						Write-Host "  |--> Cannot list domain controller for domain '$_CompleteDomainName'." -fore Yellow
+						$Global:DomainUnReachable += $DomainTested
+						$Global:DomainTestedWithSuccess = $False						
+					}
+					Else
+					{
+						$Global:DomainTestedWithSuccess = $True
+						$DomainTested.Credential = $True
+					}
+					break
+				}
+				Catch
+				{
+					If (($error[0].Exception.Message -eq "The server has rejected the client credentials.") -or ($error[0].Exception.Message -eq "Unable to contact the server"))
+					{
+						$RetryWithCred = $True
+						Write-Host "  |--> Cannot list domain controller for domain '$_CompleteDomainName'. Reason:The server has rejected the client credentials." -fore Yellow
+					}
+					Else
+					{
+						$ErrText = $error[0].Exception.Message
+						Write-Host "  |--> Cannot list domain controller for domain '$_CompleteDomainName'. Reason:$ErrText" -fore Yellow
+						$Global:DomainUnReachable += $DomainTested
+						$Global:DomainTestedWithSuccess = $False
+					}
+				}
+				
+				If(($RetryWithCred -eq $True) -and ($ForestAccessUsername -ne ""))
+				{
+					Write-host "  |--> Testing the availability of the domain '$_CompleteDomainName' by adding credential"
+					$SecStr = New-Object -TypeName System.Security.SecureString
+					$ForestAccessPassword.ToCharArray() | ForEach-Object {$SecStr.AppendChar($_)}
+					$Cred = new-object -typename System.Management.Automation.PSCredential -argumentlist $ForestAccessUsername, $SecStr
+					
+					Try
+					{
+						$GetADDomainTest =  Get-ADdomain -server $_CompleteDomainName -Credential $Cred
+						If(([string]::IsNullOrEmpty($GetADDomainTest)))
+						{
+							Write-Host "  |--> Cannot list domain controller for domain '$_CompleteDomainName'." -fore Yellow
+							$Global:DomainUnReachable += $DomainTested
+							$Global:DomainTestedWithSuccess = $False						
+						}
+						Else
+						{
+							$Global:DomainTestedWithSuccess = $True
+							$DomainTested.Credential = $True
+						}
+						break
+					}
+					Catch
+					{
+						$ErrText = $error[0].Exception.Message
+						Write-Host "  |--> Cannot list domain controller for domain '$_CompleteDomainName'. Reason:$ErrText" -fore Yellow
+						$Global:DomainUnReachable += $DomainTested
+						$Global:DomainTestedWithSuccess = $False					
+					}
+				}
+			}
+			Remove-variable DomainTested -ErrorAction SilentlyContinue
+			Remove-variable GetADDomainTest -ErrorAction SilentlyContinue
+			Remove-variable RetryWithCred -ErrorAction SilentlyContinue
+			Remove-variable _CompleteDomainName -ErrorAction SilentlyContinue
+		}
+		If($DomainTestedWithSuccess -eq $True)
+		{
+			Write-host "  |--> The domain controller for domain '$_CompleteDomainName' are available " -fore Green
+			$Global:DomainReachable += $DomainTested
+			$Global:DomainName = $DomainTested.CompleteName
+			$Global:DomainCred = $DomainTested.Credential
+		}
+		Else
+		{
+			Write-Host "  |--> Cannot list domain controller for domain '$_CompleteDomainName'. User synchronization can not be performed." -fore Red		
+			$Global:CounterUsersDomainUnreachable++
+			$Global:UsersWithDomainUnreachable += [String]$SPuser.LoginName
+		}
+		Remove-variable DomainTested -ErrorAction SilentlyContinue
+		Remove-variable GetADDomainTest -ErrorAction SilentlyContinue
+		Remove-variable RetryWithCred -ErrorAction SilentlyContinue
+		Remove-variable DomainTestedWithSuccess -ErrorAction SilentlyContinue
+		Remove-variable _CompleteDomainName -ErrorAction SilentlyContinue
+		
 	}
 }
 #EndRegion
@@ -207,6 +374,11 @@ Function Retrieve-User-And-Properties
 		)
 	Try
 	{
+		If ($DebugMode -eq $True)
+		{
+			Write-host "# Debug => Function Retrieve-User-And-Properties" -fore Yellow
+		}
+		
 		If($LoginName -eq $true)
 		{
 			if ($site.WebApplication.UseClaimsAuthentication) 
@@ -221,23 +393,24 @@ Function Retrieve-User-And-Properties
 		}
 		Else
 		{
-			if ($site.WebApplication.UseClaimsAuthentication) 
-			{
-				$claim = New-SPClaimsPrincipal $_User.LoginName -IdentityType WindowsSamAccountName
-				$Global:SPuser  = $web | Get-SPUser -Identity $claim -ErrorAction Stop
-			}
-			else
-			{
+			# if ($site.WebApplication.UseClaimsAuthentication) 
+			# {
+				# $claim = New-SPClaimsPrincipal $_User.LoginName -IdentityType WindowsSamAccountName
+				# $Global:SPuser  = $web | Get-SPUser -Identity $claim -ErrorAction Stop
+			# }
+			# else
+			# {
 				$Global:SPuser = $web | Get-SPUser -Identity $_User.LoginName -ErrorAction Stop
-			}
+			# }
 		}
+		
 		If($claim)
 		{
 			[String]$SPUserStr = $Claim.value
 			If ($DebugMode -eq $True)
 			{
-				Write-Host "Claim.value: "$Claim.value
-				Write-Host "SPUserStr: "$SPUserStr
+				Write-Host "# Claim.value: "$Claim.value
+				Write-Host "# SPUserStr: "$SPUserStr
 			}
 		}
 		Else
@@ -245,19 +418,20 @@ Function Retrieve-User-And-Properties
 			[String]$Global:SPUserStr = $SPUser
 			If ($DebugMode -eq $True)
 			{
-				Write-Host "SPuser: "$SPuser
-				Write-Host "SPUserStr: "$SPUserStr
+				Write-Host "# SPuser: "$SPuser
+				Write-Host "# SPUserStr: "$SPUserStr
 			}
 		}
+		
 		#Parse account name to get user name and domain
 		$SplitSPuser = $SPUserStr.split("\")
 		$Global:SPUserSAMAccountName = $SplitSPuser[1]
 		$Global:DomainName = $SplitSPuser[0]
 		If ($DebugMode -eq $True)
 		{
-			Write-Host "SplitSPuser: "$SplitSPuser
-			Write-Host "SPUserSAMAccountName: "$SPUserSAMAccountName
-			Write-Host "DomainName: "$DomainName
+			Write-Host "# SplitSPuser: "$SplitSPuser
+			Write-Host "# SPUserSAMAccountName: "$SPUserSAMAccountName
+			Write-Host "# DomainName: "$DomainName
 		}					
 		If($DomainName -match "\|")
 		{
@@ -265,17 +439,41 @@ Function Retrieve-User-And-Properties
 			$Global:DomainName = $SplitDomainName[1]
 			If ($DebugMode -eq $True)
 			{
-				Write-Host "SplitDomainName: "$SplitDomainName
-				Write-Host "DomainName: "$DomainName
+				Write-Host "# SplitDomainName: "$SplitDomainName
+				Write-Host "# DomainName: "$DomainName
 			}					
 		}
-		$Global:SPUserSID = $SPUser.SID
+		
+		#Get account ID and SID
+		$Global:SPUserID = $SPUser.ID
+		If ($DebugMode -eq $True)
+		{
+			Write-Host "# SPUserID: "$SPUserID
+		}		
+		If($Version -lt 15)
+		{
+			$Global:SPUserSID = $SPUser.SID
+		}
+		Else
+		{
+			$Global:SPUserSID = $SPUser.SystemUserKey
+			If($SPUserSID -match "\|")
+			{
+				$SplitSPUserSID = $SPUserSID.split("|")
+				$Global:SPUserSID = $SplitSPUserSID[1]
+			}			
+		}
+		If ($DebugMode -eq $True)
+		{
+			Write-Host "# SPUserSID: "$SPUserSID
+		}
+		
 	}
 	Catch
 	{
 		$Global:SPuser = $null
 		$errText = $error[0].Exception.Message
-		Write-Host "  |--> Failed to retrieve SharePoint User and his properties. Reason: $errText" -fore Red	
+		Write-Host "  |--> Failed to retrieve SharePoint User and his properties.Reason: $errText" -fore Red	
 	}
 }
 #EndRegion
@@ -289,22 +487,72 @@ Function GetAndCheckADAccountModification
 		$_SPUserSID,
 		$_SPuser,
 		$_SPUserStr,
-		$_DomainName
+		$_DomainName,
+		$_Cred
 	)
 
 	Try
 	{	
 		Write-Host "  |--> Get user information from domain"
 		
-		#Two requests, one by SID and one by SAM Account Name to verify if account have been deleted, recreated (New SID) or modified (New SAM Account Name).
-		$ADUserBySAMAccountName = get-aduser -f {SAMAccountName -eq $_SPUserSAMAccountName} -server $DomainName -properties DisplayName, EmailAddress, Department, Title, SAMAccountName, OfficePhone, MobilePhone
+		If ($DebugMode -eq $True)
+		{
+			Write-host "# Debug => Function GetAndCheckADAccountModification" -fore Yellow
+		}
 		
-		$ADUserBySID = get-aduser -f {SID -eq $_SPUserSID} -server $DomainName -properties DisplayName, EmailAddress, Department, Title, SAMAccountName, OfficePhone, MobilePhone
-
+		#Two requests, one by SID and one by SAM Account Name to verify if account have been deleted, recreated (New SID) or modified (New SAM Account Name).
+		If($_Cred)
+		{
+			$SecStr = New-Object -TypeName System.Security.SecureString
+			$ForestAccessPassword.ToCharArray() | ForEach-Object {$SecStr.AppendChar($_)}
+			$Cred = new-object -typename System.Management.Automation.PSCredential -argumentlist $ForestAccessUsername, $SecStr
+			
+			$filter = "SAMAccountName -eq '$($_SPUserSAMAccountName)'"
+			If ($DebugMode -eq $True)
+			{
+				Write-host "# get-aduser -f $filter -server $_DomainName -properties DisplayName, EmailAddress, Department, Title, SAMAccountName, OfficePhone, MobilePhone -Credential $Cred"
+			}
+			$ADUserBySAMAccountName = get-aduser -f $filter -server $_DomainName -properties DisplayName, EmailAddress, Department, Title, SAMAccountName, OfficePhone, MobilePhone -Credential $Cred
+			If ($_SPUserSID -ne "")
+			{
+				$filter = "SID -eq '$($_SPUserSID)'"
+				If ($DebugMode -eq $True)
+				{
+					Write-host "# get-aduser -f $filter -server $_DomainName -properties DisplayName, EmailAddress, Department, Title, SAMAccountName, OfficePhone, MobilePhone -Credential $Cred"
+				}
+				$ADUserBySID = get-aduser -f $filter -server $_DomainName -properties DisplayName, EmailAddress, Department, Title, SAMAccountName, OfficePhone, MobilePhone -Credential $Cred
+			}
+			Else
+			{
+				$ADUserBySID = $null
+			}
+		}
+		Else
+		{
+			$filter = "SAMAccountName -eq '$($_SPUserSAMAccountName)'"
+			If ($DebugMode -eq $True)
+			{			
+				Write-host "# get-aduser -f $filter -server $_DomainName -properties DisplayName, EmailAddress, Department, Title, SAMAccountName, OfficePhone, MobilePhone"
+			}
+			$ADUserBySAMAccountName = get-aduser -f $filter -server $_DomainName -properties DisplayName, EmailAddress, Department, Title, SAMAccountName, OfficePhone, MobilePhone
+			If ($_SPUserSID -ne "")
+			{
+				$filter = "SID -eq '$($_SPUserSID)'"
+				If ($DebugMode -eq $True)
+				{
+					Write-host "# get-aduser -f $filter -server $_DomainName -properties DisplayName, EmailAddress, Department, Title, SAMAccountName, OfficePhone, MobilePhone"
+				}
+				$ADUserBySID = get-aduser -f $filter -server $_DomainName -properties DisplayName, EmailAddress, Department, Title, SAMAccountName, OfficePhone, MobilePhone
+			}
+			Else
+			{
+				$ADUserBySID = $null
+			}		
+		}
 		If ($DebugMode -eq $True)
 		{						
-			Write-Host "AD User By SAMAccountName (user properties) :" ($ADUserBySAMAccountName | select *)
-			Write-Host "AD User By SID (user properties) :" ($ADUserBySID | select *)								
+			Write-Host "# AD User By SAMAccountName (user properties) :" ($ADUserBySAMAccountName | select *)
+			Write-Host "# AD User By SID (user properties) :" ($ADUserBySID | select *)								
 		}
 		
 		If(($ADUserBySAMAccountName -eq $null) -and ($ADUserBySID -eq $null))
@@ -322,7 +570,7 @@ Function GetAndCheckADAccountModification
 	Catch
 	{
 		$errText = $error[0].Exception.Message
-		Write-Host "  |--> Cannot get user information from domain. Reason: $errText " -fore Red
+		Write-Host "  |--> Cannot get user information from domain.Reason: $errText " -fore Red
 		$Global:CounterUsersNativeSynchronizationFailed++
 		$Global:UsersWithNativeSynchonizationError += [String]$SPuser.LoginName										
 		$Global:CounterUsersAdvancedSynchronizationFailed++
@@ -445,7 +693,7 @@ Function CheckADAccountModificationAndUpdate
 	Catch
 	{
 		$errText = $error[0].Exception.Message
-		Write-Host "  |--> Failed to check AD account modification. Reason: $errText" -fore Red	
+		Write-Host "  |--> Failed to check AD account modification.Reason: $errText" -fore Red	
 	}
 }
 #EndRegion
@@ -470,7 +718,7 @@ Function UpdateUser
 	Catch
 	{
 		$errText = $error[0].Exception.Message
-		Write-Host "  |--> Failed to update SharePoint User. Reason: $errText" -fore Red
+		Write-Host "  |--> Failed to update SharePoint User.Reason: $errText" -fore Red
 	}
 }
 #EndRegion
@@ -492,6 +740,10 @@ Function NativeSynchronization
 		Write-Host "  |--> Synchronize with Set-SPuser and SyncFromAD parameter"
 		
 		Set-SPUser -Identity $_Identity -web $_Web -SyncFromAD -ErrorAction Stop
+		if (!$?)
+		{
+			throw $error[0].Exception
+		}		
 
 		Write-Host "  |--> Control if user attributes have been modified"
 		ControlUserAttributesModification -_Identity $_Identity -_web $_Web
@@ -499,7 +751,7 @@ Function NativeSynchronization
 	Catch
 	{
 		$errText = $error[0].Exception.Message
-		Write-Host "  |--> User synchronization has failed. Reason: $errText" -fore Red
+		Write-Host "  |--> User synchronization has failed.Reason: $errText" -fore Red
 		$Global:CounterUsersNativeSynchronizationFailed++
 		$Global:UsersWithNativeSynchonizationError += [String]$_Identity.LoginName
 	}
@@ -542,7 +794,7 @@ Function GetcurrentUserAttributes
 	Catch
 	{
 		$errText = $error[0].Exception.Message
-		Write-Host "  |--> Failed to get current user attributes. Reason: $errText" -fore Red	
+		Write-Host "  |--> Failed to get current user attributes.Reason: $errText" -fore Red	
 	}
 }
 #EndRegion
@@ -567,20 +819,21 @@ Function ControlUserAttributesModification
 		
 		If ($DebugMode -eq $True)
 		{
-			Write-host "----Debug => SPuser"
-			Write-host "SPuser all properties:" $NewUserInfo | select *
-			Write-host "----Debug => OldValue"
-			Write-host "OldUserLogin:" $OldUserLogin
-			Write-host "OldUserdisplayName:"$OldUserdisplayName
-			Write-host "OldUserName:"$OldUserName
-			Write-host "OldUserEmail:"$OldUserEmail
-			Write-host "OldUserLoginName:"$OldUserLoginName
-			Write-host "----Debug => NewValue"
-			Write-host "NewUserLogin:"$NewUserLogin
-			Write-host "NewUserdisplayName:"$NewUserdisplayName
-			Write-host "NewUserName:"$NewUserName
-			Write-host "NewUserEmail:"$NewUserEmail
-			Write-host "NewUserLoginName:"$NewUserLoginName
+			Write-host "# Debug => Function ControlUserAttributesModification" -fore Yellow
+			Write-host "# SPuser all properties:"
+			$NewUserInfo | select *
+			Write-host "# OldValue"
+			Write-host "# OldUserLogin:" $OldUserLogin
+			Write-host "# OldUserdisplayName:"$OldUserdisplayName
+			Write-host "# OldUserName:"$OldUserName
+			Write-host "# OldUserEmail:"$OldUserEmail
+			Write-host "# OldUserLoginName:"$OldUserLoginName
+			Write-host "# NewValue"
+			Write-host "# NewUserLogin:"$NewUserLogin
+			Write-host "# NewUserdisplayName:"$NewUserdisplayName
+			Write-host "# NewUserName:"$NewUserName
+			Write-host "# NewUserEmail:"$NewUserEmail
+			Write-host "# NewUserLoginName:"$NewUserLoginName
 		}
 		
 		If ($OldUserLogin -ne $NewUserLogin)
@@ -621,7 +874,7 @@ Function ControlUserAttributesModification
 	Catch
 	{
 		$errText = $error[0].Exception.Message
-		Write-Host "  |--> Failed to control current user attributes modification. Reason: $errText" -fore Red	
+		Write-Host "  |--> Failed to control current user attributes modification.Reason: $errText" -fore Red	
 	}
 }
 #EndRegion
@@ -631,20 +884,26 @@ Function GetUserExtendedInformation
 {
 	Param
 	(
-		$_SPUserStr,
+		$_SPUserID,
 		$_Web
 	)
 	Try
 	{
+		If ($DebugMode -eq $True)
+		{
+			Write-host "# Debug => Function GetUserExtendedInformation" -fore Yellow
+			Write-Host "# _SPUserID:"$_SPUserID
+			Write-Host "# _Web:"$_Web
+		}
 		$Global:list = $_Web.Lists["User Information List"]
-		$Global:query = New-Object Microsoft.SharePoint.SPQuery
-		$Global:query.Query = "<Where><Eq><FieldRef Name='Name' /><Value Type='Text'>$_SPUserStr</Value></Eq></Where>"
+		$Global:Item = $list.GetItemById($_SPUserID)
 	}
 	Catch
 	{
 		$errText = $error[0].Exception.Message
 		$Global:List = $Null
-		Write-Host "  |--> Failed to get user extended information from SharePoint. Reason: $errText" -fore Red	
+		$Global:Item = $Null
+		Write-Host "  |--> Failed to get user extended information from SharePoint.Reason: $errText" -fore Red	
 	}
 }
 #EndRegion
@@ -655,24 +914,25 @@ Function CheckUserExtendedInformation
 	Param
 	(
 		$_list,
-		$_query
+		$_item
 	)
 
-	foreach ($item in $_list.GetItems($_query)) 
-	{
+	$_item | Foreach {
 		Try
 		{	
-			$Global:OldUserJobTitle = $item["JobTitle"]
-			$Global:OldUserDepartment = $item["Department"]
-			$Global:OldUserIPPhone = $item["IPPhone"]							
-			$Global:OldUserMobilePhone = $item["MobilePhone"]
-			$Global:OldUserTitle = $item["Title"]
-			Remove-variable item -ErrorAction SilentlyContinue	
+			$Global:OldUserJobTitle = $_item["JobTitle"]
+			$Global:OldUserDepartment = $_item["Department"]
+			If(!($IsFoundation))
+			{
+				$Global:OldUserWorkPhone = $_item["WorkPhone"]
+			}
+			$Global:OldUserMobilePhone = $_item["MobilePhone"]
+			$Global:OldUserTitle = $_item["Title"]
 		}
 		Catch
 		{
 			$errText = $error[0].Exception.Message
-			Write-Host "  |--> Failed to check user extended information from SharePoint. Reason: $errText" -fore Red	
+			Write-Host "  |--> Failed to check user extended information from SharePoint.Reason: $errText" -fore Red	
 		}	
 	}
 
@@ -685,87 +945,89 @@ Function UpdateUserExtendedInformation
 	Param
 	(
 		$_list,
-		$_query,
+		$_item,
 		$_ADUser
 	)
 
-	foreach ($item in $_list.GetItems($_query)) 
-	{
+	$_item | Foreach {
 		Try
 		{	
 			If ($DebugMode -eq $True)
 			{						
-				Write-Host "SP User Jobtitle :"$item["JobTitle"]
-				[string]::IsNullOrEmpty($item["JobTitle"])
-				Write-Host "AD User Title :"$_ADUser.title
+				Write-host "# Debug => Function UpdateUserExtendedInformation" -fore Yellow
+				Write-Host "# SP User Jobtitle :"$_item["JobTitle"]
+				[string]::IsNullOrEmpty($_item["JobTitle"])
+				Write-Host "# AD User Title :"$_ADUser.title
 				[string]::IsNullOrEmpty($_ADUser.title)
 			}
 			
-			If((![string]::IsNullOrEmpty($item["JobTitle"])) -and (![string]::IsNullOrEmpty($_ADUser.title)) -and ($item["JobTitle"] -ne [string]$_ADUser.title))
+			If((![string]::IsNullOrEmpty($_ADUser.title)) -and ($_item["JobTitle"] -ne [string]$_ADUser.title))
 			{
 				Write-Host "  |--> Job Title must be updated"
-				$item["JobTitle"] = [string]$_ADUser.title
+				$_item["JobTitle"] = [string]$_ADUser.title
 			}
 
 			If ($DebugMode -eq $True)
 			{						
-				Write-Host "SP User Department :"$item["Department"]							
-				Write-Host "AD User Department :"$_ADUser.department
+				Write-Host "# SP User Department :"$_item["Department"]							
+				Write-Host "# AD User Department :"$_ADUser.department
 			}							
 			
-			If((![string]::IsNullOrEmpty($item["Department"])) -and (![string]::IsNullOrEmpty($_ADUser.department)) -and ($item["Department"] -ne [string]$_ADUser.department))
+			If((![string]::IsNullOrEmpty($_ADUser.department)) -and ($_item["Department"] -ne [string]$_ADUser.department))
 			{
 				Write-Host "  |--> Department must be updated"
-				$item["Department"] = [string]$_ADUser.department
+				$_item["Department"] = [string]$_ADUser.department
 			}
 			
-			If ($DebugMode -eq $True)
-			{						
-				Write-Host "SP User IPPhone:"$item["IPPhone"]							
-				Write-Host "AD User OfficePhone :"$_ADUser.OfficePhone
-			}
-			
-			If((![string]::IsNullOrEmpty($item["OfficePhone"])) -and (![string]::IsNullOrEmpty($_ADUser.OfficePhone)) -and ($item["IPPhone"] -ne [string]$_ADUser.OfficePhone))
+			If(!($IsFoundation))
 			{
-				Write-Host "  |--> Office Phone must be updated"
-				$item["IPPhone"] = [string]$_ADUser.OfficePhone
+				If ($DebugMode -eq $True)
+				{						
+					Write-Host "# SP User WorkPhone:"$_item["WorkPhone"]							
+					Write-Host "# AD User OfficePhone :"$_ADUser.OfficePhone
+				}
+				
+				If((![string]::IsNullOrEmpty($_ADUser.OfficePhone)) -and ($item["WorkPhone"] -ne [string]$_ADUser.OfficePhone))
+				{
+					Write-Host "  |--> Office Phone must be updated"
+					$_item["WorkPhone"] = [string]$_ADUser.OfficePhone
+				}
 			}
 			
 			If ($DebugMode -eq $True)
 			{						
-				Write-Host "SP User MobilePhone:"$item["MobilePhone"]							
-				Write-Host "AD User MobilePhone :"$_ADUser.MobilePhone
+				Write-Host "# SP User MobilePhone:"$_item["MobilePhone"]							
+				Write-Host "# AD User MobilePhone :"$_ADUser.MobilePhone
 			}
 			
-			If((![string]::IsNullOrEmpty($item["MobilePhone"])) -and (![string]::IsNullOrEmpty($_ADUser.MobilePhone)) -and ($item["MobilePhone"] -ne [string]$_ADUser.MobilePhone))
+			If((![string]::IsNullOrEmpty($_ADUser.MobilePhone)) -and ($_item["MobilePhone"] -ne [string]$_ADUser.MobilePhone))
 			{
 				Write-Host "  |--> Mobile Phone must be updated"							
-				$item["MobilePhone"] = [string]$_ADUser.mobile
+				$_item["MobilePhone"] = [string]$_ADUser.MobilePhone
 			}
 
 			If ($DebugMode -eq $True)
 			{						
-				Write-Host "SP User Title :"$item["Title"]							
-				Write-Host "AD User DisplayName :"$_ADUser.DisplayName
+				Write-Host "# SP User Title :"$_item["Title"]							
+				Write-Host "# AD User DisplayName :"$_ADUser.DisplayName
 			}
 			
-			If((![string]::IsNullOrEmpty($item["Title"])) -and (![string]::IsNullOrEmpty($_ADUser.DisplayName)) -and ($item["Title"] -ne [string]$_ADUser.DisplayName))
+			If((![string]::IsNullOrEmpty($_ADUser.DisplayName)) -and ($_item["Title"] -ne [string]$_ADUser.DisplayName))
 			{
 				Write-Host "  |--> Title must be updated"
-				$item["Title"]= [string]$_ADUser.DisplayName
+				$_item["Title"]= [string]$_ADUser.DisplayName
 			}
 			
-			$item.SystemUpdate()
-			Remove-variable item -ErrorAction SilentlyContinue	
+			$_item.SystemUpdate()
 		}
 		Catch
 		{
 			$errText = $error[0].Exception.Message
-			Write-Host "  |--> Failed to update user extended information from SharePoint. Reason: $errText" -fore Red	
+			Write-Host "  |--> Failed to update user extended information from SharePoint.Reason: $errText" -fore Red	
 		}	
 	}
 	Remove-variable List -ErrorAction SilentlyContinue
-	Remove-variable query -ErrorAction SilentlyContinue	
+	Remove-variable Item -ErrorAction SilentlyContinue	
 
 }
 #EndRegion
@@ -776,18 +1038,17 @@ Function CheckUserExtendedInformationModification
 	Param
 	(
 		$_list,
-		$_query,
+		$_item,
 		$_ADUser
 	)
 
-	foreach ($item in $_list.GetItems($_query)) 
-	{
+	$_item | Foreach {
 
 		$Global:UserAdvancedModified = $False
 		$Global:UserAdvancedModificationFailed = $False
 		Try
 		{	
-			If((![string]::IsNullOrEmpty($item["JobTitle"])) -and (![string]::IsNullOrEmpty($_ADUser.title)) -and ($item["JobTitle"] -ne [string]$_ADUser.title))
+			If((![string]::IsNullOrEmpty($_ADUser.title)) -and ($_item["JobTitle"] -ne [string]$_ADUser.title))
 			{
 				$ADUserTitle = [string]$_ADUser.title
 				Write-Host "  |--> Failed to modify user Job Title ($OldUserJobTitle <> $ADUserTitle)" -fore Red
@@ -796,9 +1057,9 @@ Function CheckUserExtendedInformationModification
 			}
 			Else
 			{
-				If($OldUserJobTitle -ne $item["JobTitle"])
+				If($OldUserJobTitle -ne $_item["JobTitle"])
 				{
-					$NewUserJobTitle = $item["JobTitle"]
+					$NewUserJobTitle = $_item["JobTitle"]
 					Write-Host "  |--> User Job Title has been modified ($OldUserJobTitle ==> $NewUserJobTitle)" -fore Green
 					$UserAdvancedModified = $True
 					Remove-variable NewUserJobTitle -ErrorAction SilentlyContinue
@@ -806,7 +1067,7 @@ Function CheckUserExtendedInformationModification
 			}
 			Remove-variable OldUserJobTitle -ErrorAction SilentlyContinue
 			
-			If((![string]::IsNullOrEmpty($item["Department"])) -and (![string]::IsNullOrEmpty($_ADUser.department)) -and ($item["Department"] -ne [string]$_ADUser.department))
+			If((![string]::IsNullOrEmpty($_ADUser.department)) -and ($_item["Department"] -ne [string]$_ADUser.department))
 			{
 				$ADUserDepartment = [string]$_ADUser.department
 				Write-Host "  |--> Failed to modify user Department ($OldUserDepartment <> $ADUserDepartment)" -fore Red
@@ -815,36 +1076,39 @@ Function CheckUserExtendedInformationModification
 			}
 			Else
 			{
-				If($OldUserDepartment -ne $item["Department"])
+				If($OldUserDepartment -ne $_item["Department"])
 				{
-					$NewUserDepartment = $item["Department"]
+					$NewUserDepartment = $_item["Department"]
 					Write-Host "  |--> User Department has been modified ($OldUserDepartment ==> $NewUserDepartment)" -fore Green
 					$UserAdvancedModified = $True
 					Remove-variable NewUserDepartment -ErrorAction SilentlyContinue
 				}
 			}
 			Remove-variable OldUserDepartment -ErrorAction SilentlyContinue
-											
-			If((![string]::IsNullOrEmpty($item["IPPhone"])) -and (![string]::IsNullOrEmpty($_ADUser.OfficePhone)) -and ($item["IPPhone"] -ne [string]$_ADUser.OfficePhone))
-			{
-				$ADUserOfficePhone = [string]$_ADUser.OfficePhone
-				Write-Host "  |--> Failed to modify user IP Phone ($OldUserIPPhone <> $ADUserOfficePhone)" -fore Red
-				$Global:UserAdvancedModificationFailed = $True
-				Remove-variable ADUserOfficePhone -ErrorAction SilentlyContinue
-			}
-			Else
-			{
-				If($OldUserIPPhone -ne $item["IPPhone"])
+			
+			If(!($IsFoundation))
+			{			
+				If((![string]::IsNullOrEmpty($_ADUser.OfficePhone)) -and ($_item["WorkPhone"] -ne [string]$_ADUser.OfficePhone))
 				{
-					$NewUserIPPhone = $item["IPPhone"]
-					Write-Host "  |--> User IP Phone has been modified ($OldUserIPPhone ==> $NewUserIPPhone)" -fore Green
-					$UserAdvancedModified = $True
-					Remove-variable NewUserIPPhone -ErrorAction SilentlyContinue
+					$ADUserOfficePhone = [string]$_ADUser.OfficePhone
+					Write-Host "  |--> Failed to modify user WorkPhone ($OldUserWorkPhone <> $ADUserOfficePhone)" -fore Red
+					$Global:UserAdvancedModificationFailed = $True
+					Remove-variable ADUserOfficePhone -ErrorAction SilentlyContinue
 				}
+				Else
+				{
+					If($OldUserWorkPhone -ne $_item["WorkPhone"])
+					{
+						$NewUserWorkPhone = $_item["WorkPhone"]
+						Write-Host "  |--> User WorkPhone has been modified ($OldUserWorkPhone ==> $NewUserWorkPhone)" -fore Green
+						$UserAdvancedModified = $True
+						Remove-variable NewUserWorkPhone -ErrorAction SilentlyContinue
+					}
+				}
+				Remove-variable OldUserWorkPhone -ErrorAction SilentlyContinue
 			}
-			Remove-variable OldUserIPPhone -ErrorAction SilentlyContinue
 											
-			If((![string]::IsNullOrEmpty($item["MobilePhone"])) -and (![string]::IsNullOrEmpty($_ADUser.MobilePhone)) -and ($item["MobilePhone"] -ne [string]$_ADUser.MobilePhone))
+			If((![string]::IsNullOrEmpty($_ADUser.MobilePhone)) -and ($_item["MobilePhone"] -ne [string]$_ADUser.MobilePhone))
 			{
 				$ADUserMobilePhone = [string]$_ADUser.MobilePhone
 				Write-Host "  |--> Failed to modify user Mobile Phone ($OldUserMobilePhone <> $ADUserMobilePhone)" -fore Red
@@ -853,9 +1117,9 @@ Function CheckUserExtendedInformationModification
 			}
 			Else
 			{
-				If($OldUserMobilePhone -ne $item["MobilePhone"])
+				If($OldUserMobilePhone -ne $_item["MobilePhone"])
 				{
-					$NewUserMobilePhone = $item["MobilePhone"]
+					$NewUserMobilePhone = $_item["MobilePhone"]
 					Write-Host "  |--> User Mobile Phone has been modified ($OldUserMobilePhone ==> $NewUserMobilePhone)" -fore Green
 					$UserAdvancedModified = $True
 					Remove-variable NewUserMobilePhone -ErrorAction SilentlyContinue
@@ -863,7 +1127,7 @@ Function CheckUserExtendedInformationModification
 			}
 			Remove-variable OldUserMobilePhone -ErrorAction SilentlyContinue
 											
-			If((![string]::IsNullOrEmpty($item["Title"])) -and (![string]::IsNullOrEmpty($_ADUser.DisplayName)) -and ($item["Title"] -ne [string]$_ADUser.DisplayName))
+			If((![string]::IsNullOrEmpty($_ADUser.DisplayName)) -and ($_item["Title"] -ne [string]$_ADUser.DisplayName))
 			{
 				$ADUserDisplayName = [string]$_ADUser.DisplayName
 				Write-Host "  |--> Failed to modify user Title ($OldUserTitle <> $ADUserDisplayName)" -fore Red
@@ -872,9 +1136,9 @@ Function CheckUserExtendedInformationModification
 			}
 			Else
 			{
-				If($OldUserTitle -ne $item["Title"])
+				If($OldUserTitle -ne $_item["Title"])
 				{
-					$NewUserTitle = $item["Title"]
+					$NewUserTitle = $_item["Title"]
 					Write-Host "  |--> User Title has been modified ($OldUserTitle ==> $NewUserTitle)" -fore Green
 					$UserAdvancedModified = $True
 					Remove-variable NewUserTitle -ErrorAction SilentlyContinue
@@ -899,16 +1163,15 @@ Function CheckUserExtendedInformationModification
 			{
 				$Global:CounterUsersAdvancedSynchronizationSuccess++
 			}
-			Remove-variable item -ErrorAction SilentlyContinue												
 		}
 		Catch
 		{
 			$errText = $error[0].Exception.Message
-			Write-Host "  |--> Failed to check user extended information modification. Reason: $errText" -fore Red	
+			Write-Host "  |--> Failed to check user extended information modification.Reason: $errText" -fore Red	
 		}	
 	}
 	Remove-variable List -ErrorAction SilentlyContinue
-	Remove-variable query -ErrorAction SilentlyContinue	
+	Remove-variable Item -ErrorAction SilentlyContinue	
 }
 #EndRegion
 
@@ -926,7 +1189,7 @@ function Send-Email
 		}
 		else
 		{
-			Write-Host "|--> E-mail was not sent. Reason: There is no nominated recipient." -fore Red
+			Write-Host "|--> E-mail was not sent.Reason: There is no nominated recipient." -fore Red
 			break	
 		}
 
@@ -959,7 +1222,7 @@ function Send-Email
 	catch 
 	{
 		$errText = $error[0].Exception.Message
-		Write-Host "|--> Sending mail to one or more recipients failed. Reason: $errText" -fore Red
+		Write-Host "|--> Sending mail to one or more recipients failed.Reason: $errText" -fore Red
 	}	
 }
 #EndRegion
@@ -980,7 +1243,7 @@ try
 catch
 {
 		$errText = $error[0].Exception.Message
-		Write-Host "|--> A problem occurred whilst attempting to set the the Execution Policy. Reason: $errText" -fore Red
+		Write-Host "|--> A problem occurred whilst attempting to set the the Execution Policy.Reason: $errText" -fore Red
 }
 	
 $StartTime = (Get-Date)
@@ -1005,10 +1268,14 @@ Write-Host "|--> Import Active Directory Module"
 
 LoadActiveDirectoryModule
 
+Write-host "|--> Determine SharePoint Version"
+
+$Global:Isfoundation = Is-Foundation
+$global:Version = (Get-SPFarm).BuildVersion.Major
+
 Write-host "|--> List sites"
 
-# $sites = Get-SPSite -Limit ALL
-$sites = Get-SPSite https://stagingworkgroup.sodexonet.com/sites/Motivation
+$sites = Get-SPSite -Limit ALL
 
 Write-host "|--> Sites to process :"
 
@@ -1017,6 +1284,11 @@ $sites
 $Global:DomainReachable = @()
 $Global:DomainUnReachable = @()
 $Global:GlobalResult = @{}
+
+If($ImportModuleAD -eq $True)
+{
+	$Global:FarmADNetBIOSName =  (get-ADDomain).NetBIOSName
+}
 
 foreach($site in $sites) {
 
@@ -1041,6 +1313,7 @@ foreach($site in $sites) {
 		$Global:CounterUsersAdvancedSynchronizationSuccess = 0
 		$Global:CounterUsersAdvancedSynchronizationFailed = 0
 		$Global:CounterUsersAdvancedSynchronizationNoModification = 0
+		$Global:CounterUsersGlobalSynchronizationFailed = 0
 		$CounterUsersDeletionSuccess = 0
 		$CounterUsersDeletionFailed = 0
 		$Global:UsersWithDomainUnreachable = @()
@@ -1062,18 +1335,25 @@ foreach($site in $sites) {
 		
 		foreach ($User in $Users)
 		{
+			Write-host "----------------------------------------------------------------------------" -fore Yellow
 			Retrieve-User-And-Properties $User
             if ($SPuser -ne $null)
             {
 				If ($DebugMode -eq $True)
-				{						
-					Write-Host "SP User properties) :" ($SPuser | select *)
-					Write-Host "SP User SAM Account Name :"$SPUserSAMAccountName
-					Write-Host "SP User Domain Name :"$DomainName
-					Write-Host "SP User SID :"$SPUserSID					
+				{
+					Write-host "# Debug => SPuser after first call to function Retrieve-User-And-Properties" -fore Yellow				
+					Write-Host "# SP User properties) :" ($SPuser | select *)
+					Write-Host "# SP User SAM Account Name :"$SPUserSAMAccountName
+					Write-Host "# SP User Domain Name :"$DomainName
+					Write-Host "# SP User SID :"$SPUserSID					
 				}				
 				
 				$CounterUsersToSynchronize++
+				$OldCounterUsersDomainUnreachable = $CounterUsersDomainUnreachable 
+				$OldCounterUsersAdvancedNotFound = $CounterUsersAdvancedNotFound
+				$OldCounterUsersADAccountUpdateFailed = $CounterUsersADAccountUpdateFailed
+				$OldCounterUsersNativeSynchronizationFailed = $CounterUsersNativeSynchronizationFailed
+				$OldCounterUsersAdvancedSynchronizationFailed = $CounterUsersAdvancedSynchronizationFailed
 				
 				Write-Host "|--> Synchronize $SPuser ($CounterUsersToSynchronize/$UsersToSynchronize)"
 
@@ -1092,9 +1372,15 @@ foreach($site in $sites) {
 					Else
 					{
 						#Get user information from domain"
-
-						GetAndCheckADAccountModification -_SPUserSAMAccountName $SPUserSAMAccountName -_SPUserSID $SPUserSID -_SPuser $SPuser -_SPUserStr $SPUserStr -_DomainName $DomainName
-
+						If (($FarmADNetBIOSName -ne $DomainName) -and ($ForestAccessUsername -ne ""))
+						{
+							GetAndCheckADAccountModification -_SPUserSAMAccountName $SPUserSAMAccountName -_SPUserSID $SPUserSID -_SPuser $SPuser -_SPUserStr $SPUserStr -_DomainName $DomainName -_Cred $True
+						}
+						else 
+						{
+							GetAndCheckADAccountModification -_SPUserSAMAccountName $SPUserSAMAccountName -_SPUserSID $SPUserSID -_SPuser $SPuser -_SPUserStr $SPUserStr -_DomainName $DomainName
+						}
+						
 						If($ExecuteSynchronize -eq $True)
 						{
 							#Launch native synchronisation with control of modification
@@ -1102,36 +1388,44 @@ foreach($site in $sites) {
 							
 							Write-Host "  |--> Get user extended information from SharePoint"
 							
-							GetUserExtendedInformation -_SPUserStr $SPUserStr -_Web $web
+							GetUserExtendedInformation -_SPUserID $SPUserID -_Web $web
 							
-							Write-Host "  |--> Synchronize extended information"
 							If ($List -ne $null)
 							{
-								CheckUserExtendedInformation -_list $list -_query $query
+								Write-Host "  |--> Synchronize extended information"
 								
-								UpdateUserExtendedInformation -_list $list -_query $query -_ADUser $ADUser
+								CheckUserExtendedInformation -_list $list -_item $Item
+								
+								UpdateUserExtendedInformation -_list $list -_item $Item -_ADUser $ADUser
 								
 								Remove-variable List -ErrorAction SilentlyContinue
 								Remove-variable query -ErrorAction SilentlyContinue
 								
 								Write-Host "  |--> Control if user extended information have been modified"
 								
-								GetUserExtendedInformation -_SPUserStr $SPUserStr -_Web $web
+								GetUserExtendedInformation -_SPUserID $SPUserID -_Web $web
 								
-								CheckUserExtendedInformationModification -_list $list -_query $query -_ADUser $ADUser
+								CheckUserExtendedInformationModification -_list $list -_item $Item -_ADUser $ADUser
 							
 								Remove-variable List -ErrorAction SilentlyContinue
 								Remove-variable query -ErrorAction SilentlyContinue
 							}
 							Else
 							{
-								Write-Host "  |--> Failed to get $SPUserStr SharePoint user information" -fore Red
 								$Global:CounterUsersAdvancedSynchronizationFailed++
 								$Global:UsersWithAdvancedSynchonizationError += [String]$SPuser.LoginName
 							}
 							Remove-variable ADUser -ErrorAction SilentlyContinue
 						}							
 					}
+				}
+				
+				If(($OldCounterUsersDomainUnreachable -lt $CounterUsersDomainUnreachable) -or ($OldCounterUsersAdvancedNotFound -lt $CounterUsersAdvancedNotFound) -or 
+				($OldCounterUsersADAccountUpdateFailed -lt $CounterUsersADAccountUpdateFailed) -or 
+				($OldCounterUsersNativeSynchronizationFailed -lt $CounterUsersNativeSynchronizationFailed) -or 
+				($OldCounterUsersAdvancedSynchronizationFailed -lt $CounterUsersAdvancedSynchronizationFailed))
+				{
+					$CounterUsersGlobalSynchronizationFailed++	
 				}
 				Remove-variable DomainTestedWithSuccess -ErrorAction SilentlyContinue	
 				Remove-variable SPUserStr -ErrorAction SilentlyContinue
@@ -1178,7 +1472,7 @@ foreach($site in $sites) {
 			Write-Host "| "
 			$UsersWithNativeSynchonizationError | %{Write-host "| "$_}
 		}
-		$GlobalResult.add($SiteUrl,[math]::Round((($UsersToSynchronize-($CounterUsersNativeSynchronizationFailed+$CounterUsersDomainUnreachable))/$UsersToSynchronize)*100,1))
+		$GlobalResult.add($SiteUrl,[math]::Round((($UsersToSynchronize-$CounterUsersGlobalSynchronizationFailed)/$UsersToSynchronize)*100,1))
 	}
 	Else
 	{
@@ -1220,7 +1514,7 @@ foreach($site in $sites) {
 			Write-Host "| "
 			$UsersWithAdvancedSynchonizationError | %{Write-host "| "$_}
 		}
-		$GlobalResult.add([String]$SiteUrl.replace("SPSite Url=",""),[math]::Round((($UsersToSynchronize-($CounterUsersNativeSynchronizationFailed+$CounterUsersAdvancedSynchronizationFailed+$CounterUsersDomainUnreachable+$CounterUsersAdvancedNotFound+$CounterUsersADAccountUpdateFailed))/$UsersToSynchronize)*100,1))
+		$GlobalResult.add([String]$SiteUrl.replace("SPSite Url=",""),[math]::Round((($UsersToSynchronize-$CounterUsersGlobalSynchronizationFailed)/$UsersToSynchronize)*100,1))
 	}
 
 	If(($DeleteUSersNotFound -eq $True) -and (($UsersNotFound.count -gt 0) -or ($UsersWithDomainUnreachable.count -gt 0)))
@@ -1242,12 +1536,10 @@ foreach($site in $sites) {
 				Try
 				{
 					Remove-SPUser -identity $UserToDelete -web $SiteUrl -Confirm:$False  -ErrorAction Stop
-					$TestUser = Get-SPuser -Limit ALL -web $SiteUrl | where-object {$_.IsDomainGroup -eq $False} | Where-object {$_ -eq $UserToDelete}
-					If($TestUser -ne $null)
+					if (!$?)
 					{
-						Write-host "|-> Failed to remove "$UserToDelete -fore Red
-						$CounterUsersDeletionFailed++
-					}
+						throw $error[0].Exception
+					}					
 					Else
 					{
 						Write-Host $UserToDelete "has been removed" -fore Green
@@ -1257,7 +1549,7 @@ foreach($site in $sites) {
 				Catch
 				{
 					$errText = $error[0].Exception.Message
-					Write-host "|-> Failed to remove "$UserToDelete". Reason: $errText" -fore Red
+					Write-host "|-> Failed to remove "$UserToDelete".Reason: $errText" -fore Red
 					$CounterUsersDeletionFailed++
 				}
 			}
@@ -1530,6 +1822,7 @@ foreach($site in $sites) {
 	Remove-variable CounterUsersAdvancedSynchronizationSuccess -ErrorAction SilentlyContinue
 	Remove-variable CounterUsersAdvancedSynchronizationFailed -ErrorAction SilentlyContinue
 	Remove-variable CounterUsersAdvancedSynchronizationNoModification -ErrorAction SilentlyContinue
+	Remove-variable CounterUsersGlobalSynchronizationFailed -ErrorAction SilentlyContinue
 	Remove-variable CounterUsersDeletionFailed -ErrorAction SilentlyContinue
 	Remove-variable CounterUsersDeletionSuccess -ErrorAction SilentlyContinue
 	remove-variable	UsersWithDomainUnreachable -ErrorAction SilentlyContinue
@@ -1541,8 +1834,9 @@ foreach($site in $sites) {
 Remove-variable DomainReachable -ErrorAction SilentlyContinue
 Remove-variable DomainUnReachable -ErrorAction SilentlyContinue	
 $EndTime = (Get-Date)
+$duration = [math]::round($(($EndTime-$StartTime).totalminutes),2)
 Write-host "****************************************************************************" -Fore Yellow
-Write-Host "|-> the process took " (New-TimeSpan $StartTime $EndTime) -Fore White
+Write-Host "|-> the process took "$duration" minutes"  -Fore White
 If($SendMail -eq $true)
 {
 	#Creating a global html report then adding reports by site
