@@ -28,7 +28,7 @@ $Global:ForestAccessPassword = ""
 #Debug mode, use to understand why account don't synchronize properly.
 $Global:DebugMode = $False
 #Delete account with domain unreachable or not found in domain (Advanced synchronization). The deletion is performed only if the number of account to delete is less than 30% of the number of synchronized account
-$Global:DeleteUSersNotFound = $True
+$Global:DeleteUSersNotFound = $False
 #Enable sending EMail
 $Global:SendMail = $False
 #Multiple recipients must be comma separated
