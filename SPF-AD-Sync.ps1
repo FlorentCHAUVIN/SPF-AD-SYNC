@@ -293,7 +293,8 @@ Function TestDomainAvailability
 					If (($error[0].Exception.Message -eq "The server has rejected the client credentials.") -or ($error[0].Exception.Message -eq "Unable to contact the server. This may be because this server does not exist, it is currently down, or it does not have the Active Directory Web Services running."))
 					{
 						$RetryWithCred = $True
-						Write-Host "  |--> Cannot list domain controller for domain '$_CompleteDomainName'. Reason:The server has rejected the client credentials." -fore Yellow
+						$ErrText = $error[0].Exception.Message
+						Write-Host "  |--> Cannot list domain controller for domain '$_CompleteDomainName'. Reason:$ErrText" -fore Yellow
 					}
 					Else
 					{
