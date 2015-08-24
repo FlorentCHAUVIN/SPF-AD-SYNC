@@ -28,7 +28,7 @@ $Global:ForestAccessPassword = ""
 #Debug mode, use to understand why account don't synchronize properly.
 $Global:DebugMode = $False
 #Delete account with domain unreachable or not found in domain (Advanced synchronization). The deletion is performed only if the number of account to delete is less than 30% of the number of synchronized account
-$Global:DeleteUSersNotFound = $False
+$Global:DeleteUSersNotFound = $True
 #Enable sending EMail
 $Global:SendMail = $False
 #Multiple recipients must be comma separated
@@ -1372,7 +1372,7 @@ foreach($site in $sites) {
 					Else
 					{
 						#Get user information from domain"
-						If (($FarmADNetBIOSName -ne $DomainName) -and ($ForestAccessUsername -ne ""))
+						If (($DomainCred -eq $True) -and ($ForestAccessUsername -ne ""))
 						{
 							GetAndCheckADAccountModification -_SPUserSAMAccountName $SPUserSAMAccountName -_SPUserSID $SPUserSID -_SPuser $SPuser -_SPUserStr $SPUserStr -_DomainName $DomainName -_Cred $True
 						}
