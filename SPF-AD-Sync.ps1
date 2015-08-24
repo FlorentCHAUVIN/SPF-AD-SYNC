@@ -290,7 +290,7 @@ Function TestDomainAvailability
 				}
 				Catch
 				{
-					If (($error[0].Exception.Message -eq "The server has rejected the client credentials.") -or ($error[0].Exception.Message -eq "Unable to contact the server"))
+					If (($error[0].Exception.Message -eq "The server has rejected the client credentials.") -or ($error[0].Exception.Message -eq "Unable to contact the server."))
 					{
 						$RetryWithCred = $True
 						Write-Host "  |--> Cannot list domain controller for domain '$_CompleteDomainName'. Reason:The server has rejected the client credentials." -fore Yellow
