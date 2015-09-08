@@ -1,12 +1,12 @@
 #*===============================================================================
 # Filename : SPFoundation-AD-Sync.ps1
-# Version = "1.4.1"
+# Version : 1.4.2
 #*===============================================================================
-# Author = "Florent CHAUVIN"
+# Author : Florent CHAUVIN
 # Company: LINKBYNET
 #*===============================================================================
 # Created: FCH - 12 december 2014
-# Modified: FCH - 16 august 2015
+# Modified: FCH - 8 september 2015
 #*===============================================================================
 # Description :
 # Script to synchronize SharePoint Foundation user profile with their domain's account
@@ -284,7 +284,7 @@ Function TestDomainAvailability
 					Else
 					{
 						$Global:DomainTestedWithSuccess = $True
-						$DomainTested.Credential = $True
+						$DomainTested.Credential = $False
 					}
 					break
 				}
@@ -499,6 +499,12 @@ Function GetAndCheckADAccountModification
 		If ($DebugMode -eq $True)
 		{
 			Write-host "# Debug => Function GetAndCheckADAccountModification" -fore Yellow
+			Write-host "# _SPUserSAMAccountName: "$_SPUserSAMAccountName
+			Write-host "# _SPUserSID: "$_SPUserSID
+			Write-host "# _SPuser: "$_SPuser
+			Write-host "# _SPUserStr: "$_SPUserStr
+			Write-host "# _DomainName: "$_DomainName
+			Write-host "# _Cred: "$_Cred
 		}
 		
 		#Two requests, one by SID and one by SAM Account Name to verify if account have been deleted, recreated (New SID) or modified (New SAM Account Name).
