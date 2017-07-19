@@ -1,4 +1,4 @@
-# spfadsync
+# SharePoint Foundation - User Profile Synchronization
 <p><strong>Project Description</strong></p>
 <p>The objective of this project is to provide a simple and effective way to synchronize the properties of a SharePoint user with the properties of their domain account.</p>
 <p>Indeed, in foundation version of SharePoint, information in the UserInformation list only syncs with AD when the user is first added or logs in the first time.&nbsp;No synchronization properties is provided in this release, it is only available with the
